@@ -192,6 +192,24 @@ if "current_char" not in st.session_state or st.session_state.current_char != se
     st.rerun()
 
 # =================================================================
+# 🌟 チャット履歴ダウンロードボタン（サイドバーに追加）
+# =================================================================
+today_str = datetime.datetime.now().strftime("%Y%m%d")
+log_filename = f"chatlog_{today_str}.txt"
+
+# ログファイルがサーバー内に存在している場合だけボタンを表示
+if os.path.exists(log_filename):
+    with open(log_filename, "r", encoding="utf-8") as f:
+        log_content = f.read()
+    
+    st.sidebar.download_button(
+        label="📥 今日のチャット履歴をダウンロード",
+        data=log_content,
+        file_name=log_filename,
+        mime="text/plain"
+    )
+
+# =================================================================
 # 🌟 UI構築（背景画像の上にチャットを重ねるスタイル）
 # =================================================================
 # 🌟 背景画像を画面全体に適用（スマホでの見栄えを重視）
