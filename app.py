@@ -5,6 +5,7 @@ import requests
 import base64
 from google import genai
 from google.genai import types
+from supabase import create_client, Client  # 💡追加：Supabase用ライブラリ
 
 # 🌟 ページの設定（スマホでも見やすいようにcentered）
 st.set_page_config(
@@ -15,26 +16,65 @@ st.set_page_config(
 )
 
 # =================================================================
+# 🌟 Supabaseクライアントの初期化（Secretsから情報を読み込む）
+# =================================================================
+@st.cache_resource
+def init_supabase() -> Client:
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
+
+supabase_client = init_supabase()
+
+# =================================================================
+# 🌟 データベース操作用の関数
+# =================================================================
+def save_chat_to_supabase(role: str, name: str, content: str, character_name: str):
+    """発言をSupabaseのデータベースにリアルタイム保存する"""
+    # Geminiの履歴フォーマットに合わせるため、roleを 'user' か 'model' に統一します
+    gemini_role = "user" if role == "user" else "model"
+    try:
+        supabase_client.table("chat_messages").insert({
+            "role": gemini_role,
+            "name": name,
+            "content": content,
+            "character_name": character_name
+        }).execute()
+    except Exception as e:
+        st.error(f"Supabaseへの保存に失敗しました: {e}")
+
+def load_chat_from_supabase(character_name: str):
+    """このキャラクターとの過去のチャット履歴を古い順にすべて取得する"""
+    try:
+        response = supabase_client.table("chat_messages") \
+            .select("*") \
+            .eq("character_name", character_name) \
+            .order("created_at", desc=False) \
+            .execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Supabaseからの履歴読み込みに失敗しました: {e}")
+        return []
+
+# =================================================================
 # 🌟 パスワード認証機能
 # =================================================================
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
-# 認証されていない場合は、パスワード入力画面だけを表示して処理を止める
 if not st.session_state.authenticated:
     st.title("🔒 プライベートチャット")
     st.write("このアプリを利用するには合言葉が必要です。")
     password_input = st.text_input("合言葉（パスワード）を入力してください", type="password")
     
     if st.button("ログイン"):
-        # StreamlitのSecretsに保存したパスワードと一致するか確認
         if password_input == st.secrets["APP_PASSWORD"]:
             st.session_state.authenticated = True
-            st.rerun() # 画面をリロードしてチャット画面へ
+            st.rerun()
         else:
             st.error("❌ 合言葉が違います")
     
-    st.stop() # 認証されるまではここでプログラムをストップし、下のチャット画面は出さない
+    st.stop()
 
 # =================================================================
 # 🌟 関数の定義
@@ -42,7 +82,6 @@ if not st.session_state.authenticated:
 @st.cache_data(ttl=3600)
 def get_world_context_data():
     """標準ライブラリのみで日本時間（JST）を計算して情緒豊かなテキストを返す"""
-    # 💡 pytz を使わず、標準機能で UTC+9（日本時間）を作成
     jst = datetime.timezone(datetime.timedelta(hours=9))
     now = datetime.datetime.now(jst)
     
@@ -110,11 +149,11 @@ def get_world_context_data():
         "event_context": event_context
     }
 
-def create_chat_session_from_client(client, char_file_path):
+def create_chat_session_from_client(client, char_file_path, past_messages_db=[]):
+    """Geminiのチャット接続を作り、過去の履歴がある場合はそれをセッションに注入する"""
     with open(char_file_path, 'r', encoding='utf-8') as f:
         character_config = f.read()
 
-    # リアルタイム情報の取得
     ctx = get_world_context_data()
     
     base_rules = """
@@ -167,27 +206,24 @@ def create_chat_session_from_client(client, char_file_path):
         ],
         temperature=0.95
     )
-    return client.chats.create(model="gemini-3.5-flash", config=config)
+
+    # 💡 過去のデータベース履歴を Gemini SDK の型（types.Content）に変換して流し込む
+    gemini_history = []
+    for msg in past_messages_db:
+        gemini_history.append(
+            types.Content(
+                role=msg["role"],  # 'user' or 'model'
+                parts=[types.Part.from_text(text=msg["content"])]
+            )
+        )
+
+    return client.chats.create(model="gemini-3.5-flash", config=config, history=gemini_history)
 
 # 背景画像を読み込むための関数
 def get_base64_of_bin_file(bin_file):
     with open(bin_file, 'rb') as f:
         data = f.read()
     return base64.b64encode(data).decode()
-
-def save_chat_to_log(role, name, content):
-    """チャットの内容を日付ごとのテキストファイルに保存する関数"""
-    jst = datetime.timezone(datetime.timedelta(hours=9))
-    now = datetime.datetime.now(jst)
-    today_str = now.strftime("%Y%m%d")
-    filename = f"chatlog_{today_str}.txt"
-    
-    now_time = now.strftime("%H:%M:%S")
-    
-    with open(filename, 'a', encoding='utf-8') as f:
-        f.write(f"[{now_time}] {name}: {content}\n")
-        if role == "ai":
-            f.write("-" * 40 + "\n")
 
 # =================================================================
 # 🌟 メイン処理の準備
@@ -213,31 +249,30 @@ bg_image_path = f"{ai_name}_bg.png"
 ai_icon_path = f"{ai_name}_icon.png"
 ai_icon = ai_icon_path if os.path.exists(ai_icon_path) else "🌸"
 
-# キャラクターが変更されたら、接続を作る
+# 💡 キャラクター選択時、または初回起動時の処理
 if "current_char" not in st.session_state or st.session_state.current_char != selected_file:
     st.session_state.current_char = selected_file
-    st.session_state.messages = []
-    st.session_state.chat_session = create_chat_session_from_client(st.session_state.gemini_client, selected_file)
-    st.rerun()
-
-# =================================================================
-# 🌟 チャット履歴ダウンロードボタン（サイドバーに追加）
-# =================================================================
-jst = datetime.timezone(datetime.timedelta(hours=9))
-today_str = datetime.datetime.now(jst).strftime("%Y%m%d")
-log_filename = f"chatlog_{today_str}.txt"
-
-# ログファイルがサーバー内に存在している場合だけボタンを表示
-if os.path.exists(log_filename):
-    with open(log_filename, "r", encoding="utf-8") as f:
-        log_content = f.read()
     
-    st.sidebar.download_button(
-        label="📥 今日のチャット履歴をダウンロード",
-        data=log_content,
-        file_name=log_filename,
-        mime="text/plain"
+    # 💡 1. 起動時にまずSupabaseからこのキャラとの過去チャット履歴をすべて取得
+    past_db_messages = load_chat_from_supabase(ai_name)
+    
+    # 💡 2. 画面上の表示用リスト（st.session_state.messages）に復元
+    # DB上の 'model' というロール名を画面表示用に 'ai' に変換しておきます
+    st.session_state.messages = []
+    for msg in past_db_messages:
+        display_role = "user" if msg["role"] == "user" else "ai"
+        st.session_state.messages.append({
+            "role": display_role,
+            "content": msg["content"]
+        })
+        
+    # 💡 3. 過去の履歴を流し込んで Gemini のチャット接続（chat_session）を作成
+    st.session_state.chat_session = create_chat_session_from_client(
+        st.session_state.gemini_client, 
+        selected_file, 
+        past_db_messages
     )
+    st.rerun()
 
 # =================================================================
 # 🌟 UI構築（背景画像の上にチャットを重ねるスタイル）
@@ -269,7 +304,7 @@ if os.path.exists(bg_image_path):
     st.markdown(page_bg_img, unsafe_allow_html=True)
 
 
-# --- チャット画面の表示 ---
+# --- チャット画面の表示（過去の履歴もすべて描画されます） ---
 for msg in st.session_state.messages:
     if msg["role"] == "user":
         with st.chat_message("user", avatar="👤"):
@@ -280,13 +315,15 @@ for msg in st.session_state.messages:
 
 # --- ユーザー入力欄 ---
 if user_input := st.chat_input(f"{ai_name}にメッセージを送信..."):
+    # 1. 画面表示用リストに追加して自分のメッセージを表示
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user", avatar="👤"):
         st.write(user_input)
         
-    # 保存時の名前も「玄馬」に統一
-    save_chat_to_log("user", my_name, user_input)
+    # 💡 2. 自分の発言をSupabaseに即時保存
+    save_chat_to_supabase("user", my_name, user_input, ai_name)
 
+    # 3. AIの返答処理
     with st.chat_message("ai", avatar=ai_icon):
         message_placeholder = st.empty()
         full_response = ""
@@ -297,10 +334,11 @@ if user_input := st.chat_input(f"{ai_name}にメッセージを送信..."):
                     full_response += chunk.text
                     message_placeholder.markdown(full_response + "▌")
             message_placeholder.markdown(full_response)
+            
             st.session_state.messages.append({"role": "ai", "content": full_response})
             
-            # AIの発言をファイルに保存
-            save_chat_to_log("ai", ai_name, full_response)
+            # 💡 4. AIの完成した発言をSupabaseに即時保存
+            save_chat_to_supabase("ai", ai_name, full_response, ai_name)
             
         except Exception as e:
             st.error(f"通信エラーが発生しました: {e}")
