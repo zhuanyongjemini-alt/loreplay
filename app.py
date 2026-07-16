@@ -220,10 +220,10 @@ if os.path.exists(bg_image_path):
     .stApp {{
         background-image: url("data:image/png;base64,{bin_str}");
         background-size: contain;      /* 💡変更：画面内に画像全体を収める */
-        background-position: center top; 
+        background-position: center center; 
         background-repeat: no-repeat;  /* 💡追加：画像が繰り返されるのを防ぐ */
         background-attachment: fixed;
-        background-color: #e5e5e5;     /* 💡追加：余白ができた場合の背景色（お好みで） */
+        background-color: #E6F2FF;     /* 💡追加：余白ができた場合の背景色（お好みで） */
     }}
     /* 吹き出しを少し白く透けさせて読みやすくする */
     .stChatMessage {{
