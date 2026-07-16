@@ -168,7 +168,7 @@ def get_world_context_data():
     jst = datetime.timezone(datetime.timedelta(hours=9))
     now = datetime.datetime.now(jst)
     
-    now_time_str = now.strftime("%Y年%m月%d日 %H時%M分")
+    now_time_str = now.strftime("%Y年%m月%d日 %H時現在")
     weekdays_ja = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]
     weekday_str = weekdays_ja[now.weekday()]
 
@@ -186,7 +186,7 @@ def get_world_context_data():
     elif 20 <= hour < 23:
         time_context = "夜・リラックスタイム"
     else:
-        time_context = "深夜・ド深夜（夜更かし中・そろそろ寝る時間）"
+        time_context = "深夜・夜更け（夜更かし中・そろそろ寝る時間）"
 
     current_location = "兵庫県神戸市"
     current_weather, current_temp = "不明", "不明"
@@ -267,17 +267,17 @@ def create_chat_session_from_client(client, char_file_path, model_name="gemini-3
 """
     
     system_instruction_text = (
-        f"{base_rules}\n\n"
-        "【現在の現実世界のリアルタイム情報】\n"
-        f"・現在の日時：{ctx['now_time_str']}\n"
-        f"・現在の曜日：{ctx['weekday_str']}\n"
-        f"・現在の時間帯：{ctx['time_context']}\n"
-        f"・ユーザーの現在地：{ctx['current_location']}\n"
-        f"・現在の天気と気温：{ctx['current_weather']}（気温：{ctx['current_temp']}）\n"
-        f"・現在の季節/直近のイベント：{ctx['event_context']}\n\n"
-        "【あなたのキャラクター設定（思想・記憶）】\n"
-        f"{character_config}"
-    )
+    f"{base_rules}\n\n"
+    "【あなたのキャラクター設定（思想・記憶）】\n"
+    f"{character_config}\n\n"
+    "【現在の現実世界のリアルタイム情報】\n"
+    f"・現在の日時：{ctx['now_time_str']}\n"
+    f"・現在の曜日：{ctx['weekday_str']}\n"
+    f"・現在の時間帯：{ctx['time_context']}\n"
+    f"・ユーザーの現在地：{ctx['current_location']}\n"
+    f"・現在の天気と気温：{ctx['current_weather']}（気温：{ctx['current_temp']}）\n"
+    f"・現在の季節/直近のイベント：{ctx['event_context']}\n"
+)
 
     config = types.GenerateContentConfig(
         system_instruction=system_instruction_text,
@@ -328,7 +328,7 @@ ai_name = temp_name.split("_", 1)[1] if "_" in temp_name else temp_name
 # 🤖 AIモデルの選択（ProとFlashの切り替え）
 selected_model = st.sidebar.selectbox(
     "🤖 AIモデルの選択",
-    ["gemini-3.5-flash", "gemini-3.1-pro"],
+    ["gemini-3.5-flash", "gemini-3.1-pro-preview"],
     index=0,
     help="Flash：高速でサクサク会話が進みます。Pro：複雑な感情表現や深い会話が得意です。"
 )
