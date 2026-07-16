@@ -126,24 +126,24 @@ def delete_last_exchange_from_supabase(session_id: str):
         st.error(f"履歴の削除に失敗しました: {e}")
     return False
 
-selected_session_id = st.sidebar.selectbox(
-        "会話スレッドの選択",
-        options=list(session_options.keys()),
-        format_func=lambda x: session_options[x],
-        index=list(session_options.keys()).index(active_id)
-    )
-    
-    # 🗑️ 【追加】このスレッドを削除するボタン
-    if st.sidebar.button("🗑️ このスレッドを削除する", use_container_width=True):
-        # ユーザーに確認を求める（オプション。今回は即時削除にしてトーストで通知）
-        if delete_session_from_supabase(selected_session_id):
-            st.toast("スレッドを削除しました！", icon="🗑️")
-            # セッション状態をリセットし、他のスレッドが自動選択されるようにする
-            st.session_state.messages = []
-            st.session_state.chat_session = None
-            if "current_session_id" in st.session_state:
-                del st.session_state.current_session_id
-            st.rerun()
+def delete_session_from_supabase(session_id: str):
+    """スレッド（セッション）と、それに紐づくすべてのメッセージを削除する"""
+    try:
+        # 1. 先に紐づくメッセージをすべて削除
+        supabase_client.table("chat_messages") \
+            .delete() \
+            .eq("session_id", session_id) \
+            .execute()
+            
+        # 2. スレッド本体を削除
+        supabase_client.table("chat_sessions") \
+            .delete() \
+            .eq("id", session_id) \
+            .execute()
+        return True
+    except Exception as e:
+        st.error(f"スレッドの削除に失敗しました: {e}")
+        return False
 
 # =================================================================
 # 🌟 ランダム背景画像の選定関数
@@ -412,7 +412,7 @@ if sessions:
         index=list(session_options.keys()).index(active_id)
     )
 
-    # 🗑️ 【追加】このスレッドを削除するボタン
+    # 🗑️ スレッドを削除するボタン
     if st.sidebar.button("🗑️ このスレッドを削除する", use_container_width=True):
         if delete_session_from_supabase(selected_session_id):
             st.toast("スレッドを削除しました！", icon="🗑️")
@@ -430,7 +430,7 @@ if sessions:
         st.session_state.chat_session = None
         st.rerun()
 
-# 📥 【復活】このスレッドをダウンロードする機能
+# 📥 このスレッドをダウンロードする機能
 if st.session_state.get("messages"):
     log_text = ""
     for msg in st.session_state.messages:
@@ -444,6 +444,7 @@ if st.session_state.get("messages"):
         mime="text/plain",
         use_container_width=True
     )
+
 # =================================================================
 # 🌟 Gemini チャットセッションの復元と読み込み
 # =================================================================
