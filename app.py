@@ -126,6 +126,25 @@ def delete_last_exchange_from_supabase(session_id: str):
         st.error(f"履歴の削除に失敗しました: {e}")
     return False
 
+selected_session_id = st.sidebar.selectbox(
+        "会話スレッドの選択",
+        options=list(session_options.keys()),
+        format_func=lambda x: session_options[x],
+        index=list(session_options.keys()).index(active_id)
+    )
+    
+    # 🗑️ 【追加】このスレッドを削除するボタン
+    if st.sidebar.button("🗑️ このスレッドを削除する", use_container_width=True):
+        # ユーザーに確認を求める（オプション。今回は即時削除にしてトーストで通知）
+        if delete_session_from_supabase(selected_session_id):
+            st.toast("スレッドを削除しました！", icon="🗑️")
+            # セッション状態をリセットし、他のスレッドが自動選択されるようにする
+            st.session_state.messages = []
+            st.session_state.chat_session = None
+            if "current_session_id" in st.session_state:
+                del st.session_state.current_session_id
+            st.rerun()
+
 # =================================================================
 # 🌟 ランダム背景画像の選定関数
 # =================================================================
