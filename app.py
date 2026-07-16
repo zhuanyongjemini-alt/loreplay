@@ -3,7 +3,6 @@ import os
 import datetime
 import requests
 import base64
-import pytz  # タイムゾーン設定用ライブラリ
 from google import genai
 from google.genai import types
 
@@ -42,16 +41,15 @@ if not st.session_state.authenticated:
 # =================================================================
 @st.cache_data(ttl=3600)
 def get_world_context_data():
-    """元の roleplay_2.py にあった情緒豊かなテキストや詳細情報を完全に再現したディクショナリを返す"""
-    # 常に日本時間（JST）を取得
-    jst = pytz.timezone('Asia/Tokyo')
+    """標準ライブラリのみで日本時間（JST）を計算して情緒豊かなテキストを返す"""
+    # 💡 pytz を使わず、標準機能で UTC+9（日本時間）を作成
+    jst = datetime.timezone(datetime.timedelta(hours=9))
     now = datetime.datetime.now(jst)
     
     now_time_str = now.strftime("%Y年%m月%d日 %H時%M分")
     weekdays_ja = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]
     weekday_str = weekdays_ja[now.weekday()]
 
-    # 💡 削られていた補足テキストを 100% 復元
     hour = now.hour
     if 5 <= hour < 9:
         time_context = "朝（これから一日が始まる時間）"
@@ -87,7 +85,6 @@ def get_world_context_data():
     except Exception:
         pass
 
-    # 💡 削られていた季節・イベント設定を 100% 復元
     month, day = now.month, now.day
     if month == 1: event_context = "お正月・新年あけましておめでとう"
     elif month == 2: event_context = "バレンタインデー（もうすぐ）" if day <= 14 else "冬の終わり"
@@ -120,7 +117,6 @@ def create_chat_session_from_client(client, char_file_path):
     # リアルタイム情報の取得
     ctx = get_world_context_data()
     
-    # 長広舌ルールも含めた完全なシステムプロンプトの基礎
     base_rules = """
 # Roleplay & Persona Architecture
 [CRITICAL: Absolute Identity Overwrite]
@@ -147,7 +143,6 @@ def create_chat_session_from_client(client, char_file_path):
   3. ABSOLUTELY NO OMISSIONS. Do not use token-saving techniques, summaries, or phrases like "以下略". Maintain 100% of the information, heat, and emotional intensity until the very end of your physical token limit.
 """
     
-    # 💡 元の箇条書き構造・見出し文（「思想・記憶」など）を 100% 完全再現して合体
     system_instruction_text = (
         f"{base_rules}\n\n"
         "【現在の現実世界のリアルタイム情報】\n"
@@ -182,7 +177,7 @@ def get_base64_of_bin_file(bin_file):
 
 def save_chat_to_log(role, name, content):
     """チャットの内容を日付ごとのテキストファイルに保存する関数"""
-    jst = pytz.timezone('Asia/Tokyo')
+    jst = datetime.timezone(datetime.timedelta(hours=9))
     now = datetime.datetime.now(jst)
     today_str = now.strftime("%Y%m%d")
     filename = f"chatlog_{today_str}.txt"
@@ -228,7 +223,7 @@ if "current_char" not in st.session_state or st.session_state.current_char != se
 # =================================================================
 # 🌟 チャット履歴ダウンロードボタン（サイドバーに追加）
 # =================================================================
-jst = pytz.timezone('Asia/Tokyo')
+jst = datetime.timezone(datetime.timedelta(hours=9))
 today_str = datetime.datetime.now(jst).strftime("%Y%m%d")
 log_filename = f"chatlog_{today_str}.txt"
 
