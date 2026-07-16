@@ -234,7 +234,7 @@ def get_world_context_data():
 # =================================================================
 # 🌟 チャットセッション生成関数
 # =================================================================
-def create_chat_session_from_client(client, char_file_path, model_name="gemini-2.5-flash", past_messages_db=[]):
+def create_chat_session_from_client(client, char_file_path, model_name="gemini-3.5-flash", past_messages_db=[]):
     with open(char_file_path, 'r', encoding='utf-8') as f:
         character_config = f.read()
 
@@ -328,7 +328,7 @@ ai_name = temp_name.split("_", 1)[1] if "_" in temp_name else temp_name
 # 🤖 AIモデルの選択（ProとFlashの切り替え）
 selected_model = st.sidebar.selectbox(
     "🤖 AIモデルの選択",
-    ["gemini-2.5-flash", "gemini-2.5-pro"],
+    ["gemini-3.5-flash", "gemini-3.5-pro"],
     index=0,
     help="Flash：高速でサクサク会話が進みます。Pro：複雑な感情表現や深い会話が得意です。"
 )
