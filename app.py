@@ -220,7 +220,7 @@ if os.path.exists(bg_image_path):
     .stApp {{
         background-image: url("data:image/png;base64,{bin_str}");
         background-size: contain;      /* 💡変更：画面内に画像全体を収める */
-        background-position: center center; 
+        background-position: center 50px; 
         background-repeat: no-repeat;  /* 💡追加：画像が繰り返されるのを防ぐ */
         background-attachment: fixed;
         background-color: #E6F2FF;     /* 💡追加：余白ができた場合の背景色（お好みで） */
@@ -241,7 +241,6 @@ if os.path.exists(bg_image_path):
     '''
     st.markdown(page_bg_img, unsafe_allow_html=True)
 
-st.title("AI Roleplay Chat 🎭")
 
 # --- チャット画面の表示 ---
 for msg in st.session_state.messages:
