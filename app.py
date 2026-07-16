@@ -5,9 +5,9 @@ import requests
 import base64
 from google import genai
 from google.genai import types
-from supabase import create_client, Client  # 💡追加：Supabase用ライブラリ
+from supabase import create_client, Client
 
-# 🌟 ページの設定（スマホでも見やすいようにcentered）
+# 🌟 ページの設定
 st.set_page_config(
     page_title="AI Roleplay App",
     page_icon="💬",
@@ -16,7 +16,7 @@ st.set_page_config(
 )
 
 # =================================================================
-# 🌟 Supabaseクライアントの初期化（Secretsから情報を読み込む）
+# 🌟 Supabaseクライアントの初期化
 # =================================================================
 @st.cache_resource
 def init_supabase() -> Client:
@@ -29,31 +29,65 @@ supabase_client = init_supabase()
 # =================================================================
 # 🌟 データベース操作用の関数
 # =================================================================
-def save_chat_to_supabase(role: str, name: str, content: str, character_name: str):
-    """発言をSupabaseのデータベースにリアルタイム保存する"""
-    # Geminiの履歴フォーマットに合わせるため、roleを 'user' か 'model' に統一します
+def load_sessions_from_supabase(character_name: str):
+    """該当キャラクターのチャット部屋一覧を新着順に取得する"""
+    try:
+        res = supabase_client.table("chat_sessions") \
+            .select("*") \
+            .eq("character_name", character_name) \
+            .order("created_at", desc=True) \
+            .execute()
+        return res.data
+    except Exception as e:
+        st.error(f"セッション一覧の取得に失敗: {e}")
+        return []
+
+def create_new_session(character_name: str, title: str):
+    """新しくチャット部屋（スレッド）を作成する"""
+    try:
+        res = supabase_client.table("chat_sessions").insert({
+            "character_name": character_name,
+            "title": title
+        }).execute()
+        return res.data[0]
+    except Exception as e:
+        st.error(f"新規セッションの作成に失敗: {e}")
+        return None
+
+def update_session_title(session_id: str, new_title: str):
+    """チャット部屋のタイトルを更新する（最初の1言目送信時に使用）"""
+    try:
+        supabase_client.table("chat_sessions") \
+            .update({"title": new_title}) \
+            .eq("id", session_id) \
+            .execute()
+    except Exception:
+        pass
+
+def save_chat_to_supabase(role: str, name: str, content: str, session_id: str):
+    """メッセージを特定のチャット部屋に保存する"""
     gemini_role = "user" if role == "user" else "model"
     try:
         supabase_client.table("chat_messages").insert({
             "role": gemini_role,
             "name": name,
             "content": content,
-            "character_name": character_name
+            "session_id": session_id
         }).execute()
     except Exception as e:
-        st.error(f"Supabaseへの保存に失敗しました: {e}")
+        st.error(f"メッセージの保存に失敗しました: {e}")
 
-def load_chat_from_supabase(character_name: str):
-    """このキャラクターとの過去のチャット履歴を古い順にすべて取得する"""
+def load_chat_from_supabase(session_id: str):
+    """選択されたチャット部屋の過去ログを古い順にロードする"""
     try:
         response = supabase_client.table("chat_messages") \
             .select("*") \
-            .eq("character_name", character_name) \
+            .eq("session_id", session_id) \
             .order("created_at", desc=False) \
             .execute()
         return response.data
     except Exception as e:
-        st.error(f"Supabaseからの履歴読み込みに失敗しました: {e}")
+        st.error(f"メッセージ履歴の読み込みに失敗しました: {e}")
         return []
 
 # =================================================================
@@ -81,7 +115,7 @@ if not st.session_state.authenticated:
 # =================================================================
 @st.cache_data(ttl=3600)
 def get_world_context_data():
-    """標準ライブラリのみで日本時間（JST）を計算して情緒豊かなテキストを返す"""
+    """標準ライブラリのみで日本時間（JST）を計算して情報を返す"""
     jst = datetime.timezone(datetime.timedelta(hours=9))
     now = datetime.datetime.now(jst)
     
@@ -105,7 +139,6 @@ def get_world_context_data():
     else:
         time_context = "深夜・ド深夜（夜更かし中・そろそろ寝る時間）"
 
-    # 位置情報は神戸市に固定
     current_location = "兵庫県神戸市"
     current_weather, current_temp = "不明", "不明"
     try:
@@ -129,10 +162,10 @@ def get_world_context_data():
     elif month == 2: event_context = "バレンタインデー（もうすぐ）" if day <= 14 else "冬の終わり"
     elif month == 3: event_context = "ひな祭り・卒業シーズン"
     elif month == 4: event_context = "新生活・お花見・春"
-    elif month == 5: event_context = "ゴールデンウィーク" if day <= 5 else "新緑の季節"
+    elif month == 5: event_context = "ゴールデンウィーク" if day <= 5 else "新緑 of 季節"
     elif month == 6: event_context = "梅雨の季節"
     elif month == 7: event_context = "七夕・本格的な夏の始まり"
-    elif month == 8: event_context = "お盆・夏休み・夏真っ盛り"
+    elif month == 8: event_context = "お盆・夏休み・夏盛り"
     elif month == 9: event_context = "お月見・秋の訪れ"
     elif month == 10: event_context = "ハロウィン（もうすぐ）" if day <= 31 else "秋深し"
     elif month == 11: event_context = "紅葉シーズン・冬の足音"
@@ -150,7 +183,6 @@ def get_world_context_data():
     }
 
 def create_chat_session_from_client(client, char_file_path, past_messages_db=[]):
-    """Geminiのチャット接続を作り、過去の履歴がある場合はそれをセッションに注入する"""
     with open(char_file_path, 'r', encoding='utf-8') as f:
         character_config = f.read()
 
@@ -207,19 +239,17 @@ def create_chat_session_from_client(client, char_file_path, past_messages_db=[])
         temperature=0.95
     )
 
-    # 💡 過去のデータベース履歴を Gemini SDK の型（types.Content）に変換して流し込む
     gemini_history = []
     for msg in past_messages_db:
         gemini_history.append(
             types.Content(
-                role=msg["role"],  # 'user' or 'model'
+                role=msg["role"],
                 parts=[types.Part.from_text(text=msg["content"])]
             )
         )
 
     return client.chats.create(model="gemini-3.5-flash", config=config, history=gemini_history)
 
-# 背景画像を読み込むための関数
 def get_base64_of_bin_file(bin_file):
     with open(bin_file, 'rb') as f:
         data = f.read()
@@ -239,25 +269,94 @@ if not txt_files:
 
 selected_file = st.sidebar.selectbox("誰と話す？", txt_files)
 
-# 表示名の設定
 my_name = "玄馬"
 temp_name = selected_file.replace("char_", "").replace(".txt", "")
 ai_name = temp_name.split("_", 1)[1] if "_" in temp_name else temp_name
 
-# アイコン・背景のパスを生成
 bg_image_path = f"{ai_name}_bg.png"
 ai_icon_path = f"{ai_name}_icon.png"
 ai_icon = ai_icon_path if os.path.exists(ai_icon_path) else "🌸"
 
-# 💡 キャラクター選択時、または初回起動時の処理
+# キャラクターが変更された場合
 if "current_char" not in st.session_state or st.session_state.current_char != selected_file:
     st.session_state.current_char = selected_file
     
-    # 💡 1. 起動時にまずSupabaseからこのキャラとの過去チャット履歴をすべて取得
-    past_db_messages = load_chat_from_supabase(ai_name)
+    # 💡 このキャラのセッション一覧をロード
+    sessions = load_sessions_from_supabase(ai_name)
+    if not sessions:
+        # 初回はデフォルトのスレッドを作成
+        new_sess = create_new_session(ai_name, "新しいチャット")
+        st.session_state.current_session_id = new_sess["id"]
+    else:
+        st.session_state.current_session_id = sessions[0]["id"] # 最新のものを選択
+        
+    st.session_state.messages = []
+    st.session_state.chat_session = None  # 下で初期化
+    st.rerun()
+
+# =================================================================
+# 🌟 サイドバー：チャット部屋（スレッド）管理
+# =================================================================
+st.sidebar.markdown("---")
+st.sidebar.subheader("💬 チャット履歴")
+
+# 1. 新規チャット作成ボタン
+if st.sidebar.button("➕ 新規チャットを開始", use_container_width=True):
+    new_sess = create_new_session(ai_name, "新しいチャット")
+    if new_sess:
+        st.session_state.current_session_id = new_sess["id"]
+        st.session_state.messages = []
+        st.session_state.chat_session = None
+        st.rerun()
+
+# 2. 過去チャットの選択セレクトボックス
+sessions = load_sessions_from_supabase(ai_name)
+session_options = {}
+if sessions:
+    session_options = {sess["id"]: sess["title"] for sess in sessions}
     
-    # 💡 2. 画面上の表示用リスト（st.session_state.messages）に復元
-    # DB上の 'model' というロール名を画面表示用に 'ai' に変換しておきます
+    # 万が一、現在のセッションIDがリストにない場合のフォールバック
+    active_id = st.session_state.get("current_session_id")
+    if active_id not in session_options:
+        active_id = list(session_options.keys())[0]
+        st.session_state.current_session_id = active_id
+        
+    selected_session_id = st.sidebar.selectbox(
+        "会話スレッドの選択",
+        options=list(session_options.keys()),
+        format_func=lambda x: session_options[x],
+        index=list(session_options.keys()).index(active_id)
+    )
+    
+    # ユーザーが別のスレッドを選択した場合
+    if selected_session_id != active_id:
+        st.session_state.current_session_id = selected_session_id
+        st.session_state.messages = []
+        st.session_state.chat_session = None
+        st.rerun()
+
+# 3. 選択中チャットのダウンロードボタン（今見ているスレッドをダウンロードします）
+if st.session_state.get("messages"):
+    log_text = ""
+    for msg in st.session_state.messages:
+        role_name = my_name if msg["role"] == "user" else ai_name
+        log_text += f"{role_name}: {msg['content']}\n\n"
+    
+    st.sidebar.download_button(
+        label="📥 このスレッドをダウンロード",
+        data=log_text,
+        file_name=f"chat_{ai_name}_{st.session_state.current_session_id[:8]}.txt",
+        mime="text/plain",
+        use_container_width=True
+    )
+
+# =================================================================
+# 🌟 Gemini チャットセッションの復元と読み込み
+# =================================================================
+if "chat_session" not in st.session_state or st.session_state.chat_session is None:
+    # 現在のチャット部屋から過去メッセージをすべて取得
+    past_db_messages = load_chat_from_supabase(st.session_state.current_session_id)
+    
     st.session_state.messages = []
     for msg in past_db_messages:
         display_role = "user" if msg["role"] == "user" else "ai"
@@ -266,16 +365,14 @@ if "current_char" not in st.session_state or st.session_state.current_char != se
             "content": msg["content"]
         })
         
-    # 💡 3. 過去の履歴を流し込んで Gemini のチャット接続（chat_session）を作成
     st.session_state.chat_session = create_chat_session_from_client(
         st.session_state.gemini_client, 
         selected_file, 
         past_db_messages
     )
-    st.rerun()
 
 # =================================================================
-# 🌟 UI構築（背景画像の上にチャットを重ねるスタイル）
+# 🌟 UI構築
 # =================================================================
 if os.path.exists(bg_image_path):
     bin_str = get_base64_of_bin_file(bg_image_path)
@@ -303,8 +400,7 @@ if os.path.exists(bg_image_path):
     '''
     st.markdown(page_bg_img, unsafe_allow_html=True)
 
-
-# --- チャット画面の表示（過去の履歴もすべて描画されます） ---
+# --- チャット表示 ---
 for msg in st.session_state.messages:
     if msg["role"] == "user":
         with st.chat_message("user", avatar="👤"):
@@ -313,17 +409,21 @@ for msg in st.session_state.messages:
         with st.chat_message("ai", avatar=ai_icon):
             st.write(msg["content"])
 
-# --- ユーザー入力欄 ---
+# --- チャット入力欄 ---
 if user_input := st.chat_input(f"{ai_name}にメッセージを送信..."):
-    # 1. 画面表示用リストに追加して自分のメッセージを表示
+    # 💡 最初の発言なら、スレッドのタイトルを自動で変更する（Web版Gemini風）
+    current_title = session_options.get(st.session_state.current_session_id, "")
+    if current_title == "新しいチャット":
+        # 12文字に切り詰めてタイトルにする
+        new_title = user_input[:12] + "..." if len(user_input) > 12 else user_input
+        update_session_title(st.session_state.current_session_id, new_title)
+
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user", avatar="👤"):
         st.write(user_input)
         
-    # 💡 2. 自分の発言をSupabaseに即時保存
-    save_chat_to_supabase("user", my_name, user_input, ai_name)
+    save_chat_to_supabase("user", my_name, user_input, st.session_state.current_session_id)
 
-    # 3. AIの返答処理
     with st.chat_message("ai", avatar=ai_icon):
         message_placeholder = st.empty()
         full_response = ""
@@ -336,9 +436,11 @@ if user_input := st.chat_input(f"{ai_name}にメッセージを送信..."):
             message_placeholder.markdown(full_response)
             
             st.session_state.messages.append({"role": "ai", "content": full_response})
+            save_chat_to_supabase("ai", ai_name, full_response, st.session_state.current_session_id)
             
-            # 💡 4. AIの完成した発言をSupabaseに即時保存
-            save_chat_to_supabase("ai", ai_name, full_response, ai_name)
-            
+            # 💡 タイトルが変わった場合などを考慮して画面を再描画（サイドバーの文字を更新）
+            if current_title == "新しいチャット":
+                st.rerun()
+                
         except Exception as e:
             st.error(f"通信エラーが発生しました: {e}")
