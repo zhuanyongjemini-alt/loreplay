@@ -15,6 +15,28 @@ st.set_page_config(
 )
 
 # =================================================================
+# 🌟 パスワード認証機能（ここを追加しました！）
+# =================================================================
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+# 認証されていない場合は、パスワード入力画面だけを表示して処理を止める
+if not st.session_state.authenticated:
+    st.title("🔒 プライベートチャット")
+    st.write("このアプリを利用するには合言葉が必要です。")
+    password_input = st.text_input("合言葉（パスワード）を入力してください", type="password")
+    
+    if st.button("ログイン"):
+        # StreamlitのSecretsに保存したパスワードと一致するか確認
+        if password_input == st.secrets["APP_PASSWORD"]:
+            st.session_state.authenticated = True
+            st.rerun() # 画面をリロードしてチャット画面へ
+        else:
+            st.error("❌ 合言葉が違います")
+    
+    st.stop() # 認証されるまではここでプログラムをストップし、下のチャット画面は出さない
+
+# =================================================================
 # 🌟 関数の定義
 # =================================================================
 @st.cache_data(ttl=3600)
