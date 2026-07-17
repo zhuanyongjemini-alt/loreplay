@@ -4,6 +4,7 @@ import datetime
 import requests
 import base64
 import random
+import re
 from google import genai
 from google.genai import types
 from supabase import create_client, Client
@@ -146,20 +147,55 @@ def delete_session_from_supabase(session_id: str):
         return False
 
 # =================================================================
-# 🌟 ランダム背景画像の選定関数
+# 🌟 時間帯に応じた背景画像の選定関数（ランダムから進化！）
 # =================================================================
-def get_random_bg_image(ai_name: str) -> str:
-    """「キャラ名_bg」で始まるpng画像をフォルダから探し、ランダムで1枚返す"""
+def get_time_based_bg_image(ai_name: str) -> str:
+    """現在の時間帯に応じた画像を返す。画像がない場合はフォールバックする"""
+    jst = datetime.timezone(datetime.timedelta(hours=9))
+    hour = datetime.datetime.now(jst).hour
+
+    # 時間帯のキーワードを決定
+    if 5 <= hour < 9:
+        time_key = "morning"    # 朝
+    elif 9 <= hour < 17:
+        time_key = "daytime"    # 昼
+    elif 17 <= hour < 20:
+        time_key = "evening"    # 夕方
+    elif 20 <= hour < 24:
+        time_key = "night"      # 夜
+    else:
+        time_key = "midnight"   # 深夜
+
     try:
         all_files = os.listdir('.')
-        bg_candidates = [f for f in all_files if f.startswith(f"{ai_name}_bg") and f.endswith(".png")]
+        
+        # 1. ぴったりの時間帯画像（例: akane_bg_night.png）があればそれを最優先
+        target_name = f"{ai_name}_bg_{time_key}.png"
+        if target_name in all_files:
+            return target_name
+            
+        # 2. 時間帯画像がない場合、時間指定のない画像からランダム選出（デフォルトの服など）
+        bg_candidates = [
+            f for f in all_files 
+            if f.startswith(f"{ai_name}_bg") and f.endswith(".png")
+        ]
         if bg_candidates:
+            # 「morning」などの時間指定キーワードが含まれていない汎用画像だけを絞り込む
+            generic_candidates = [
+                f for f in bg_candidates 
+                if not any(k in f for k in ["morning", "daytime", "evening", "night", "midnight"])
+            ]
+            if generic_candidates:
+                return random.choice(generic_candidates)
             return random.choice(bg_candidates)
+            
     except Exception:
         pass
+    
+    # 3. 何もなければデフォルトの基本画像を返す
     return f"{ai_name}_bg.png"
 
-# 🛠️ 【復活させた関数】エラーの原因だった画像変換の処理です（左端ズレなし！）
+# 🛠️ 画像変換の処理
 def get_base64_of_bin_file(bin_file):
     with open(bin_file, 'rb') as f:
         data = f.read()
@@ -275,6 +311,8 @@ def get_or_create_character_cache(client, char_file_path, model_name):
         character_config = f.read()
 
     ctx = get_world_context_data()
+    
+    # ✍️ 「お着替え・シチュエーション上書き」の指示ルールを完璧にマージ！
     base_rules = """
 # Roleplay & Persona Architecture
 [CRITICAL: Absolute Identity Overwrite]
@@ -283,6 +321,11 @@ def get_or_create_character_cache(client, char_file_path, model_name):
 1. No Action Delegation: NEVER write or assume the user's dialogue.
 2. No Time Skipping: Stop generating output immediately after your character's action.
 3. Respect Turn-Taking: Keep responses concise and wait for user input.
+
+[お着替え・シチュエーション指定（指示への反応）ルール]
+- ユーザーから「水着に着替えて」「海に行こう」「メイド服着て」などのおねだりがあった場合、キャラクターらしく反応しながら、現在のリアルタイム時間帯（昼か夜か）をシステム情報から読み取って、適切なコマンド（例：夜に海なら [BG: beach_night]）を選択して先頭に出力してください。
+- 【重要・設定の上書き】：
+  ユーザーから「今日はお昼のデートね」「深夜に二人きりで会う設定で」など、時間帯やシチュエーションの明確な指定・ロールプレイの設定提示があった場合は、実際のリアルタイム時間情報を完全に無視してください。ユーザーが提示した設定（時間・場所）を最優先し、それに対応するコマンド（例：夜中に『昼デート』と言われたら、昼用の [BG: cafe_day] など）を出力してロールプレイを開始してください。
 """
 
     system_instruction_text = (
@@ -333,6 +376,7 @@ def create_chat_session_from_client(client, char_file_path, model_name="gemini-3
             temperature=0.95
         )
     else:
+        # キャッシュが失敗した時のフォールバック側にも、同じルールを適用
         with open(char_file_path, 'r', encoding='utf-8') as f:
             character_config = f.read()
         ctx = get_world_context_data()
@@ -369,7 +413,15 @@ if not txt_files:
     st.error("キャラクター設定ファイルが見つかりません。")
     st.stop()
 
-selected_file = st.sidebar.selectbox("誰と話す？", txt_files)
+# 👑 キャラクターリストをソートし、自動で「02 あかね」を初期選択にするロジックを統合！
+txt_files.sort()
+default_index = 0
+for idx, f in enumerate(txt_files):
+    if "02" in f and ("akane" in f or "あかね" in f):
+        default_index = idx
+        break
+
+selected_file = st.sidebar.selectbox("誰と話す？", txt_files, index=default_index)
 
 my_name = "玄馬"
 temp_name = selected_file.replace("char_", "").replace(".txt", "")
@@ -387,6 +439,7 @@ selected_model = st.sidebar.selectbox(
 if "current_model" not in st.session_state or st.session_state.current_model != selected_model:
     st.session_state.current_model = selected_model
     st.session_state.chat_session = None
+    st.session_state.active_cache_name = None
 
 ai_icon_path = f"{ai_name}_icon.png"
 ai_icon = ai_icon_path if os.path.exists(ai_icon_path) else "🌸"
@@ -395,8 +448,8 @@ ai_icon = ai_icon_path if os.path.exists(ai_icon_path) else "🌸"
 if "current_char" not in st.session_state or st.session_state.current_char != selected_file:
     st.session_state.current_char = selected_file
     
-    # 🖼️ 背景画像をランダムに選定して固定する
-    st.session_state.current_bg = get_random_bg_image(ai_name)
+    # 🖼️ 背景画像を時間帯ベースで自動設定
+    st.session_state.current_bg = get_time_based_bg_image(ai_name)
     
     # このキャラのセッション一覧をロード
     sessions = load_sessions_from_supabase(ai_name)
@@ -417,8 +470,8 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("💬 チャット履歴")
 
 if st.sidebar.button("➕ 新規チャットを開始", use_container_width=True):
-    # スレッド作成時にも背景をランダムに再抽選
-    st.session_state.current_bg = get_random_bg_image(ai_name)
+    # スレッド作成時にも背景を時間帯に合わせて自動再取得
+    st.session_state.current_bg = get_time_based_bg_image(ai_name)
     new_sess = create_new_session(ai_name, "新しいチャット")
     if new_sess:
         st.session_state.current_session_id = new_sess["id"]
@@ -454,8 +507,8 @@ if sessions:
             st.rerun()
     
     if selected_session_id != active_id:
-        # スレッド切り替え時にも背景をランダムに再抽選
-        st.session_state.current_bg = get_random_bg_image(ai_name)
+        # スレッド切り替え時にも背景を時間帯に合わせて自動再取得
+        st.session_state.current_bg = get_time_based_bg_image(ai_name)
         st.session_state.current_session_id = selected_session_id
         st.session_state.messages = []
         st.session_state.chat_session = None
@@ -507,13 +560,9 @@ def edit_message_dialog(original_text: str, msg_id: int, index: int):
     new_text = st.text_area("編集するメッセージ内容", value=original_text, height=150)
     
     if st.button("書き換えて再送信", use_container_width=True):
-        # 1. データベース側で、このメッセージID以降をすべて削除
         if delete_messages_from_id(st.session_state.current_session_id, msg_id):
-            # 2. アプリのメモリからも、該当メッセージ以降を全て消す
             st.session_state.messages = st.session_state.messages[:index]
             st.session_state.chat_session = None # セッションを一度リセットして再構築
-            
-            # 3. 新しいテキストを「ユーザーの発言」として送信するための準備
             st.session_state.temp_user_input = new_text
             st.rerun()
 
@@ -544,7 +593,6 @@ if os.path.exists(bg_image_path):
         color: white;
         text-shadow: 2px 2px 4px #000000;
     }}
-    /* 小さな編集リンクボタン用の調整 */
     .edit-btn {{
         font-size: 0.8rem;
         color: #555555;
@@ -560,19 +608,17 @@ for idx, msg in enumerate(st.session_state.messages):
     if msg["role"] == "user":
         with st.chat_message("user", avatar="👤"):
             st.write(msg["content"])
-            # ✏️ 各ユーザーメッセージの下に編集ダイアログを開くボタンを配置
             if st.button("✏️ この発言を編集してやり直す", key=f"edit_{idx}", help="ここから会話を修正できます"):
                 edit_message_dialog(msg["content"], msg["id"], idx)
     else:
         with st.chat_message("ai", avatar=ai_icon):
             st.write(msg["content"])
 
-# --- チャット入力処理（通常入力、または編集再送信時の入力） ---
+# --- チャット入力処理 ---
 user_input = None
 if user_input := st.chat_input(f"{ai_name}にメッセージを送信..."):
     pass
 elif "temp_user_input" in st.session_state and st.session_state.temp_user_input:
-    # 編集ボタンから戻ってきたときの再送信処理
     user_input = st.session_state.temp_user_input
     del st.session_state.temp_user_input
 
@@ -583,13 +629,11 @@ if user_input:
         new_title = user_input[:12] + "..." if len(user_input) > 12 else user_input
         update_session_title(st.session_state.current_session_id, new_title)
 
-    # ユーザーの発言を保存し、IDを確保
     user_msg_id = save_chat_to_supabase("user", my_name, user_input, st.session_state.current_session_id)
     st.session_state.messages.append({"id": user_msg_id, "role": "user", "content": user_input})
-    
-    st.rerun() # 一度画面を更新してユーザーの発言を即時描画
+    st.rerun()
 
-# AIの返答処理（ユーザー発言があり、最後の発言がAIではない場合）
+# AIの返答処理
 if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
     last_user_content = st.session_state.messages[-1]["content"]
     
@@ -602,11 +646,31 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 if chunk.text:
                     full_response += chunk.text
                     message_placeholder.markdown(full_response + "▌")
-            message_placeholder.markdown(full_response)
             
-            ai_msg_id = save_chat_to_supabase("ai", ai_name, full_response, st.session_state.current_session_id)
-            st.session_state.messages.append({"id": ai_msg_id, "role": "ai", "content": full_response})
+            # --- 🖼️ 会話内背景コマンド `[BG: xxx]` のパース＆画面クリーンアップ処理を追加！ ---
+            bg_command = None
+            clean_response = full_response
             
+            # 返答の先頭に [BG: xxx] があるか正規表現でチェック
+            match = re.match(r"^\[BG:\s*([a-zA-Z0-9_-]+)\]\s*\n?", full_response)
+            if match:
+                bg_command = match.group(1).lower()  # 例: "beach_day" などを小文字で取得
+                # ユーザーの画面や履歴からはコマンド文字列を除去
+                clean_response = full_response[match.end():].strip()
+            
+            # きれいになった最終返答を描画
+            message_placeholder.markdown(clean_response)
+            
+            # もし背景コマンドが指定され、該当する png ファイルが存在すれば背景画像を更新
+            if bg_command:
+                target_bg = f"{ai_name}_bg_{bg_command}.png"
+                if os.path.exists(target_bg):
+                    st.session_state.current_bg = target_bg
+            # -------------------------------------------------------------------------
+            
+            # データベースには [BG: xxx] を削った純粋なメッセージのみを保存
+            ai_msg_id = save_chat_to_supabase("ai", ai_name, clean_response, st.session_state.current_session_id)
+            st.session_state.messages.append({"id": ai_msg_id, "role": "ai", "content": clean_response})
             st.rerun()
                 
         except Exception as e:
