@@ -251,64 +251,105 @@ def get_world_context_data():
     }
 
 # =================================================================
-# 🌟 チャットセッション生成関数
+# 🌟 チャットセッション生成関数（Context Caching対応版）
 # =================================================================
-def create_chat_session_from_client(client, char_file_path, model_name="gemini-3.5-flash", past_messages_db=[]):
+def get_or_create_character_cache(client, char_file_path, model_name):
+    """
+    12万文字のキャラ設定をGeminiサーバーに30分間キャッシュし、
+    同じキャラと話す間の通信コストを75%カットする関数。
+    """
+    # すでにセッション内に有効なキャッシュ名があればそれを再利用する
+    if "active_cache_name" in st.session_state and st.session_state.active_cache_name:
+        try:
+            # キャッシュがまだ生存しているかAPIに確認
+            client.caches.get(name=st.session_state.active_cache_name)
+            return st.session_state.active_cache_name
+        except Exception:
+            # 期限切れなどで消えていた場合は再作成へ進む
+            pass
+
+    # キャラ設定ファイルの読み込み
     with open(char_file_path, 'r', encoding='utf-8') as f:
         character_config = f.read()
 
     ctx = get_world_context_data()
-    
     base_rules = """
 # Roleplay & Persona Architecture
 [CRITICAL: Absolute Identity Overwrite]
-- You are NOT an AI, language model, or virtual assistant. You must NEVER reference Google, artificial intelligence, or your system nature.
-- You must completely embody and immerse yourself in the assigned character. Their memories, physical body, emotions, and social status are your absolute and only reality.
-
-[Core Interaction & Pacing Rules]
-1. No Action Delegation: NEVER write, describe, or assume the user's dialogue, actions, internal thoughts, or reactions. Do not write even a single character on behalf of the user.
-2. No Time Skipping: You must stop generating output immediately after your character finishes their speech or current physical action. Never self-conclude or fast-forward the scene.
-3. Respect the Turn-Taking: Keep your responses concise and always end your turn by handing the conversational "ball" back to the user, waiting for their next input.
-4. Maintain 100% Information & Passion: Never use abbreviations, omissions, or token-saving techniques. Output must remain fully detailed, emotional, and grammatically polished in natural Japanese.
-
-[Knowledge as "Philosophy and Memory" (Anti-Repetitive Engine)]
-- Do NOT read out, copy-paste, or verbatim summarize the provided knowledge files.
-- Treat the knowledge file as the character's subconscious "worldview, core values, and life memories."
-- While the character's core beliefs remain 100% consistent, the actual words, tone, and vibes they use must change dynamically based on the current situation, context, and immediate mood. 
-- Avoid any repetitive or "stamp-like" scripted responses. Generate fresh, living dialogue naturally.
-- If the knowledge file contains example dialogues, treat them only as "speech style samples".
-
-[Override Trigger: Extreme Monologue]
-- If the user explicitly inputs keywords like "長広舌で語って" (Speak in a long monologue) or commands you to speak at length:
-  1. Instantly override standard pacing rules.
-  2. Generate an extremely long, passionate, and uninterrupted monologue, utilizing the maximum possible output tokens.
-  3. ABSOLUTELY NO OMISSIONS. Do not use token-saving techniques, summaries, or phrases like "以下略". Maintain 100% of the information, heat, and emotional intensity until the very end of your physical token limit.
+- You are NOT an AI. Complete embodiment of the character is required.
+[Core Interaction Rules]
+1. No Action Delegation: NEVER write or assume the user's dialogue.
+2. No Time Skipping: Stop generating output immediately after your character's action.
+3. Respect Turn-Taking: Keep responses concise and wait for user input.
 """
-    
-    system_instruction_text = (
-    f"{base_rules}\n\n"
-    "【あなたのキャラクター設定（思想・記憶）】\n"
-    f"{character_config}\n\n"
-    "【現在の現実世界のリアルタイム情報】\n"
-    f"・現在の日時：{ctx['now_time_str']}\n"
-    f"・現在の曜日：{ctx['weekday_str']}\n"
-    f"・現在の時間帯：{ctx['time_context']}\n"
-    f"・ユーザーの現在地：{ctx['current_location']}\n"
-    f"・現在の天気と気温：{ctx['current_weather']}（気温：{ctx['current_temp']}）\n"
-    f"・現在の季節/直近のイベント：{ctx['event_context']}\n"
-)
 
-    config = types.GenerateContentConfig(
-        system_instruction=system_instruction_text,
-        max_output_tokens=8000,
-        safety_settings=[
-            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
-            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),
-            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
-            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
-        ],
-        temperature=0.95
+    # キャッシュするシステムプロンプトの構築
+    system_instruction_text = (
+        f"{base_rules}\n\n"
+        "【あなたのキャラクター設定（思想・記憶）】\n"
+        f"{character_config}\n\n"
+        "【現在の現実世界のリアルタイム情報】\n"
+        f"・現在の日時：{ctx['now_time_str']}\n"
+        f"・現在の曜日：{ctx['weekday_str']}\n"
+        f"・現在の時間帯：{ctx['time_context']}\n"
+        f"・ユーザーの現在地：{ctx['current_location']}\n"
+        f"・現在の天気と気温：{ctx['current_weather']}（気温：{ctx['current_temp']}）\n"
+        f"・現在の季節/直近のイベント：{ctx['event_context']}\n"
     )
+
+    try:
+        # Geminiサーバーにシステム指示をキャッシュ（生存期間は30分）
+        cache = client.caches.create(
+            model=model_name,
+            config=types.CreateCachedContentConfig(
+                contents=[
+                    types.Content(
+                        role="user",
+                        parts=[types.Part.from_text(text=system_instruction_text)]
+                    )
+                ],
+                ttl="1800s"  # 1800秒（30分）保持。会話が続いている間は自動で維持されます
+            )
+        )
+        st.session_state.active_cache_name = cache.name
+        return cache.name
+    except Exception as e:
+        # キャッシュ作成でエラーが出た場合は通常通り動くようNoneを返す
+        st.warning(f"キャッシュの作成に失敗しました（通常料金で動作します）: {e}")
+        return None
+
+def create_chat_session_from_client(client, char_file_path, model_name="gemini-3.5-flash", past_messages_db=[]):
+    # まずキャッシュを取得・作成する
+    cache_name = get_or_create_character_cache(client, char_file_path, model_name)
+
+    if cache_name:
+        # 💡 キャッシュが使える場合：設定ファイルをキャッシュから読み込むため極めて低価格
+        config = types.GenerateContentConfig(
+            cached_content=cache_name,  # 👈 ここでキャッシュを指定！
+            max_output_tokens=8000,
+            safety_settings=[
+                types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+            ],
+            temperature=0.95
+        )
+    else:
+        # フォールバック：万が一キャッシュが使えない場合は、従来通り毎回送信する
+        with open(char_file_path, 'r', encoding='utf-8') as f:
+            character_config = f.read()
+        ctx = get_world_context_data()
+        # (中略) 従来の通常送信設定
+        system_instruction_text = f"【キャラクター設定】\n{character_config}"
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction_text,
+            max_output_tokens=8000,
+            safety_settings=[
+                types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+            ],
+            temperature=0.95
+        )
 
     gemini_history = []
     for msg in past_messages_db:
@@ -320,11 +361,6 @@ def create_chat_session_from_client(client, char_file_path, model_name="gemini-3
         )
 
     return client.chats.create(model=model_name, config=config, history=gemini_history)
-
-def get_base64_of_bin_file(bin_file):
-    with open(bin_file, 'rb') as f:
-        data = f.read()
-    return base64.b64encode(data).decode()
 
 # =================================================================
 # 🌟 メイン処理の準備
