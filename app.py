@@ -159,6 +159,12 @@ def get_random_bg_image(ai_name: str) -> str:
         pass
     return f"{ai_name}_bg.png"
 
+# 🛠️ 【復活させた関数】エラーの原因だった画像変換の処理です（左端ズレなし！）
+def get_base64_of_bin_file(bin_file):
+    with open(bin_file, 'rb') as f:
+        data = f.read()
+    return base64.b64encode(data).decode()
+
 # =================================================================
 # 🌟 パスワード認証機能
 # =================================================================
@@ -258,17 +264,13 @@ def get_or_create_character_cache(client, char_file_path, model_name):
     12万文字のキャラ設定をGeminiサーバーに30分間キャッシュし、
     同じキャラと話す間の通信コストを75%カットする関数。
     """
-    # すでにセッション内に有効なキャッシュ名があればそれを再利用する
     if "active_cache_name" in st.session_state and st.session_state.active_cache_name:
         try:
-            # キャッシュがまだ生存しているかAPIに確認
             client.caches.get(name=st.session_state.active_cache_name)
             return st.session_state.active_cache_name
         except Exception:
-            # 期限切れなどで消えていた場合は再作成へ進む
             pass
 
-    # キャラ設定ファイルの読み込み
     with open(char_file_path, 'r', encoding='utf-8') as f:
         character_config = f.read()
 
@@ -283,7 +285,6 @@ def get_or_create_character_cache(client, char_file_path, model_name):
 3. Respect Turn-Taking: Keep responses concise and wait for user input.
 """
 
-    # キャッシュするシステムプロンプトの構築
     system_instruction_text = (
         f"{base_rules}\n\n"
         "【あなたのキャラクター設定（思想・記憶）】\n"
@@ -298,7 +299,6 @@ def get_or_create_character_cache(client, char_file_path, model_name):
     )
 
     try:
-        # Geminiサーバーにシステム指示をキャッシュ（生存期間は30分）
         cache = client.caches.create(
             model=model_name,
             config=types.CreateCachedContentConfig(
@@ -308,24 +308,21 @@ def get_or_create_character_cache(client, char_file_path, model_name):
                         parts=[types.Part.from_text(text=system_instruction_text)]
                     )
                 ],
-                ttl="1800s"  # 1800秒（30分）保持。会話が続いている間は自動で維持されます
+                ttl="1800s"  # 30分保持
             )
         )
         st.session_state.active_cache_name = cache.name
         return cache.name
     except Exception as e:
-        # キャッシュ作成でエラーが出た場合は通常通り動くようNoneを返す
         st.warning(f"キャッシュの作成に失敗しました（通常料金で動作します）: {e}")
         return None
 
 def create_chat_session_from_client(client, char_file_path, model_name="gemini-3.5-flash", past_messages_db=[]):
-    # まずキャッシュを取得・作成する
     cache_name = get_or_create_character_cache(client, char_file_path, model_name)
 
     if cache_name:
-        # 💡 キャッシュが使える場合：設定ファイルをキャッシュから読み込むため極めて低価格
         config = types.GenerateContentConfig(
-            cached_content=cache_name,  # 👈 ここでキャッシュを指定！
+            cached_content=cache_name,
             max_output_tokens=8000,
             safety_settings=[
                 types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
@@ -336,11 +333,9 @@ def create_chat_session_from_client(client, char_file_path, model_name="gemini-3
             temperature=0.95
         )
     else:
-        # フォールバック：万が一キャッシュが使えない場合は、従来通り毎回送信する
         with open(char_file_path, 'r', encoding='utf-8') as f:
             character_config = f.read()
         ctx = get_world_context_data()
-        # (中略) 従来の通常送信設定
         system_instruction_text = f"【キャラクター設定】\n{character_config}"
         config = types.GenerateContentConfig(
             system_instruction=system_instruction_text,
